@@ -2,142 +2,183 @@
 <html>
 <head>
   <title>OptionsScreen</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    form { margin-bottom: 20px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-    th, td { border: 1px solid #ccc; padding: 6px; text-align: center; font-size: 14px; }
-    th { background: #eee; }
-    #results { margin-top: 20px; }
+    body { font-family: Arial, sans-serif; margin: 18px; }
+    form { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 10px; align-items: end; }
+    label { display: grid; gap: 6px; font-size: 14px; }
+    input, select, button { padding: 8px; font-size: 14px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+    th, td { border: 1px solid #ddd; padding: 6px; text-align: center; font-size: 13px; }
+    th { background: #f3f3f3; }
+    tr.top { background: #f6fff4; font-weight: 600; }
+    #results { margin-top: 16px; }
+    #msg { margin-top: 10px; color: #b00; font-weight: 600; }
+    .muted { color:#666; font-size:12px; }
   </style>
 </head>
 <body>
   <h2>Sell Option Screener</h2>
+
   <form id="optionForm">
-    <label>Ticker: <input type="text" id="ticker" required></label>
-    <label>Type:
+    <label>Ticker
+      <input type="text" id="ticker" placeholder="e.g. AAPL" required />
+    </label>
+    <label>Type
       <select id="optionType">
         <option value="put">Put</option>
         <option value="call">Call</option>
       </select>
     </label>
-    <label>Strike:
+    <label>Strike
       <select id="strike" required>
-        <option value="">-- Enter ticker first --</option>
+        <option value="">-- enter ticker first --</option>
       </select>
     </label>
     <button type="submit">Search</button>
   </form>
 
+  <div id="msg"></div>
   <div id="results"></div>
+  <div class="muted">Note: Quotes may be delayed; ROI assumes cash-secured and expiry worthless.</div>
 
 <script>
-// ---------- Fetch via your Render proxy ----------
-async function fetchOptions(ticker) {
-  const url = `https://optionsscreen.onrender.com/options?ticker=${ticker}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Failed to fetch option chain");
-  return await res.json();
+const PROXY = "https://optionsscreen.onrender.com";
+
+// --- helpers ---
+function ensureResult(data) {
+  if (!data || !data.optionChain || !Array.isArray(data.optionChain.result) || data.optionChain.result.length === 0) {
+    const desc = (data && data.error && (data.error.description || data.error)) ? String(data.error.description || data.error) : "No option chain available for this ticker.";
+    throw new Error(desc);
+  }
+  return data.optionChain.result[0];
 }
 
-// ---------- Populate strike dropdown ----------
+async function fetchChain(ticker, date=null) {
+  const t = (ticker || "").toUpperCase().trim();
+  const url = `${PROXY}/options?ticker=${encodeURIComponent(t)}${date ? `&date=${encodeURIComponent(date)}` : ""}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Proxy HTTP ${res.status}`);
+  const data = await res.json().catch(() => { throw new Error("Proxy returned non-JSON"); });
+  return ensureResult(data);
+}
+
+// --- populate strikes (from nearest expiry; fast & sufficient) ---
 async function populateStrikes(ticker, type) {
-  document.getElementById("strike").innerHTML = "<option>Loading...</option>";
+  const strikeSel = document.getElementById("strike");
+  strikeSel.innerHTML = "<option>Loading…</option>";
+  document.getElementById("msg").textContent = "";
   try {
-    const data = await fetchOptions(ticker);
-    const optionSets = data.optionChain.result[0].options;
-    if (!optionSets.length) throw new Error("No option data found");
+    const base = await fetchChain(ticker);
+    const firstSet = (base.options && base.options[0]) ? base.options[0] : null;
+    if (!firstSet) throw new Error("No options payload present.");
+    const contracts = type === "put" ? (firstSet.puts || []) : (firstSet.calls || []);
+    let strikes = [...new Set(contracts.map(c => c.strike))].sort((a,b)=>a-b);
 
-    let strikes = new Set();
-    optionSets.forEach(set => {
-      const contracts = type === "put" ? set.puts : set.calls;
-      contracts.forEach(c => strikes.add(c.strike));
-    });
-    strikes = Array.from(strikes).sort((a,b)=>a-b);
+    if (strikes.length === 0) throw new Error("No strikes found for nearest expiry.");
 
-    const strikeSel = document.getElementById("strike");
     strikeSel.innerHTML = "";
     strikes.forEach(s => {
       const opt = document.createElement("option");
       opt.value = s;
-      opt.text = s;
+      opt.textContent = s;
       strikeSel.appendChild(opt);
     });
-  } catch(err) {
-    document.getElementById("strike").innerHTML = "<option>Error</option>";
+  } catch (err) {
+    strikeSel.innerHTML = "<option value=''>Error</option>";
+    document.getElementById("msg").textContent = "Strike load error: " + err.message;
   }
 }
 
-// ---------- Compute metrics ----------
-function computeMetrics(chain, strike, type) {
+// --- compute metrics across ALL expiries ---
+function computeRow(match, expEpoch, strike, type) {
   const now = new Date();
-  let rows = [];
-  chain.optionChain.result[0].options.forEach(optSet => {
-    const exp = new Date(optSet.expirationDate * 1000);
-    const days = Math.round((exp - now) / (1000*60*60*24));
-    const contracts = type === "put" ? optSet.puts : optSet.calls;
-    const match = contracts.find(c => Math.abs(c.strike - strike) < 1e-6);
-    if (!match || days <= 0) return;
+  const exp = new Date(expEpoch * 1000);
+  const days = Math.max(1, Math.round((exp - now) / (1000*60*60*24))); // guard
+  const bid = Number(match.bid ?? 0), ask = Number(match.ask ?? 0), last = Number(match.lastPrice ?? 0);
+  const mid = (bid > 0 && ask > 0) ? (bid + ask)/2 : (last > 0 ? last : 0);
+  if (mid <= 0) return null;
 
-    const mid = (match.bid + match.ask) / 2 || match.lastPrice;
-    if (!mid || mid <= 0) return;
+  const collateral = strike * 100;
+  const premium = mid * 100;
+  const yExp = premium / collateral;
+  const ann = yExp * (365 / days);
+  const daily = yExp / days;
+  const breakeven = type === "put" ? (strike - mid) : (strike + mid);
 
-    const collateral = strike * 100;
-    const premium = mid * 100;
-    const yieldExp = premium / collateral;
-    const annROI = yieldExp * (365/days);
-    const daily = yieldExp / days;
-    const breakeven = type === "put" ? strike - mid : strike + mid;
+  return {
+    expiry: exp.toISOString().split("T")[0],
+    days,
+    strike,
+    mid: mid.toFixed(2),
+    premium: premium.toFixed(2),
+    collateral: collateral.toFixed(2),
+    yield: (yExp * 100).toFixed(2),
+    annROI: (ann * 100).toFixed(2),
+    daily: (daily * 100).toFixed(4),
+    breakeven: breakeven.toFixed(2),
+    IV: (Number(match.impliedVolatility ?? 0) * 100).toFixed(2),
+    OI: match.openInterest ?? "",
+    Vol: match.volume ?? ""
+  };
+}
 
-    rows.push({
-      expiry: exp.toISOString().split("T")[0],
-      days, strike,
-      mid: mid.toFixed(2),
-      premium: premium.toFixed(2),
-      collateral: collateral.toFixed(2),
-      yield: (yieldExp*100).toFixed(2),
-      annROI: (annROI*100).toFixed(2),
-      daily: (daily*100).toFixed(4),
-      breakeven: breakeven.toFixed(2),
-      IV: (match.impliedVolatility*100).toFixed(2),
-      OI: match.openInterest,
-      Vol: match.volume
-    });
-  });
+async function gatherAllRows(ticker, strike, type) {
+  const base = await fetchChain(ticker);
+  const dates = Array.isArray(base.expirationDates) ? base.expirationDates : [];
+  if (!dates.length) throw new Error("No expiration dates available.");
+
+  const rows = [];
+  // Limit to avoid hammering (fetch first 20 expiries max)
+  for (const d of dates.slice(0, 20)) {
+    try {
+      const set = await fetchChain(ticker, d);
+      const opt = (set.options && set.options[0]) ? set.options[0] : null;
+      if (!opt) continue;
+      const list = type === "put" ? (opt.puts || []) : (opt.calls || []);
+      const match = list.find(c => Math.abs(Number(c.strike) - strike) < 1e-6);
+      if (!match) continue;
+      const row = computeRow(match, opt.expirationDate || d, strike, type);
+      if (row) rows.push(row);
+    } catch (_) {
+      /* skip bad one */
+    }
+  }
   return rows.sort((a,b)=>parseFloat(b.annROI) - parseFloat(a.annROI));
 }
 
-// ---------- Trigger strike list when ticker/type changes ----------
+// --- UI wiring ---
 document.getElementById("ticker").addEventListener("change", () => {
-  const ticker = document.getElementById("ticker").value.toUpperCase();
+  const t = document.getElementById("ticker").value.toUpperCase().trim();
+  document.getElementById("ticker").value = t;
   const type = document.getElementById("optionType").value;
-  if (ticker) populateStrikes(ticker, type);
-});
-document.getElementById("optionType").addEventListener("change", () => {
-  const ticker = document.getElementById("ticker").value.toUpperCase();
-  const type = document.getElementById("optionType").value;
-  if (ticker) populateStrikes(ticker, type);
+  if (t) populateStrikes(t, type);
 });
 
-// ---------- Form submit ----------
+document.getElementById("optionType").addEventListener("change", () => {
+  const t = document.getElementById("ticker").value.toUpperCase().trim();
+  if (t) populateStrikes(t, document.getElementById("optionType").value);
+});
+
 document.getElementById("optionForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const ticker = document.getElementById("ticker").value.toUpperCase();
-  const strike = parseFloat(document.getElementById("strike").value);
+  const t = document.getElementById("ticker").value.toUpperCase().trim();
   const type = document.getElementById("optionType").value;
+  const strike = parseFloat(document.getElementById("strike").value);
+  document.getElementById("msg").textContent = "";
+  const results = document.getElementById("results");
+  results.innerHTML = "Loading…";
 
-  document.getElementById("results").innerHTML = "Loading...";
   try {
-    const data = await fetchOptions(ticker);
-    const rows = computeMetrics(data, strike, type);
+    const rows = await gatherAllRows(t, strike, type);
     if (!rows.length) {
-      document.getElementById("results").innerHTML = "No matching contracts.";
+      results.textContent = "No matching contracts found for that strike across expiries.";
       return;
     }
-
     let html = "<table><tr><th>Expiry</th><th>Days</th><th>Strike</th><th>Mid</th><th>Premium</th><th>Collateral</th><th>Yield%</th><th>Ann ROI%</th><th>Daily%</th><th>Breakeven</th><th>IV%</th><th>OI</th><th>Vol</th></tr>";
-    rows.forEach(r=>{
-      html += `<tr>
+    rows.forEach((r, i) => {
+      html += `<tr class="${i===0?'top':''}">
         <td>${r.expiry}</td><td>${r.days}</td><td>${r.strike}</td><td>${r.mid}</td>
         <td>${r.premium}</td><td>${r.collateral}</td><td>${r.yield}</td>
         <td>${r.annROI}</td><td>${r.daily}</td><td>${r.breakeven}</td>
@@ -145,9 +186,10 @@ document.getElementById("optionForm").addEventListener("submit", async (e) => {
       </tr>`;
     });
     html += "</table>";
-    document.getElementById("results").innerHTML = html;
-  } catch(err) {
-    document.getElementById("results").innerHTML = "Error: " + err.message;
+    results.innerHTML = html;
+  } catch (err) {
+    document.getElementById("msg").textContent = "Error: " + err.message;
+    results.innerHTML = "";
   }
 });
 </script>
