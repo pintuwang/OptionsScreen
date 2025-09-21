@@ -32,9 +32,9 @@
   <div id="results"></div>
 
 <script>
-// ---------- Fetch via AllOrigins proxy ----------
+// ---------- Fetch via your Render proxy ----------
 async function fetchOptions(ticker) {
-  const url = `https://api.allorigins.win/raw?url=https://query2.finance.yahoo.com/v7/finance/options/${ticker}`;
+  const url = `https://optionsscreen.onrender.com/options?ticker=${ticker}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("Failed to fetch option chain");
   return await res.json();
