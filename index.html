@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Options Screener</title>
+  <title>OptionsScreen</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
     form { margin-bottom: 20px; }
@@ -32,14 +32,15 @@
   <div id="results"></div>
 
 <script>
+// ---------- Fetch with CORS proxy ----------
 async function fetchOptions(ticker) {
-  const url = `https://query2.finance.yahoo.com/v7/finance/options/${ticker}`;
+  const url = `https://corsproxy.io/?https://query2.finance.yahoo.com/v7/finance/options/${ticker}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("Failed to fetch option chain");
   return await res.json();
 }
 
-// Populate strike dropdown
+// ---------- Populate strike dropdown ----------
 async function populateStrikes(ticker, type) {
   document.getElementById("strike").innerHTML = "<option>Loading...</option>";
   try {
@@ -67,6 +68,7 @@ async function populateStrikes(ticker, type) {
   }
 }
 
+// ---------- Compute metrics ----------
 function computeMetrics(chain, strike, type) {
   const now = new Date();
   let rows = [];
@@ -102,11 +104,10 @@ function computeMetrics(chain, strike, type) {
       Vol: match.volume
     });
   });
-  // sort by annualized ROI descending
   return rows.sort((a,b)=>parseFloat(b.annROI) - parseFloat(a.annROI));
 }
 
-// trigger strike list when ticker or type changes
+// ---------- Trigger strike list when ticker/type changes ----------
 document.getElementById("ticker").addEventListener("change", () => {
   const ticker = document.getElementById("ticker").value.toUpperCase();
   const type = document.getElementById("optionType").value;
@@ -118,7 +119,7 @@ document.getElementById("optionType").addEventListener("change", () => {
   if (ticker) populateStrikes(ticker, type);
 });
 
-// form submit
+// ---------- Form submit ----------
 document.getElementById("optionForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const ticker = document.getElementById("ticker").value.toUpperCase();
