@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Options Screener</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    form { margin-bottom: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: center; font-size: 14px; }
+    th { background: #eee; }
+    #results { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h2>Sell Option Screener</h2>
+  <form id="optionForm">
+    <label>Ticker: <input type="text" id="ticker" required></label>
+    <label>Type:
+      <select id="optionType">
+        <option value="put">Put</option>
+        <option value="call">Call</option>
+      </select>
+    </label>
+    <label>Strike:
+      <select id="strike" required>
+        <option value="">-- Enter ticker first --</option>
+      </select>
+    </label>
+    <button type="submit">Search</button>
+  </form>
+
+  <div id="results"></div>
+
+<script>
+async function fetchOptions(ticker) {
+  const url = `https://query2.finance.yahoo.com/v7/finance/options/${ticker}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Failed to fetch option chain");
+  return await res.json();
+}
+
+// Populate strike dropdown
+async function populateStrikes(ticker, type) {
+  document.getElementById("strike").innerHTML = "<option>Loading...</option>";
+  try {
+    const data = await fetchOptions(ticker);
+    const optionSets = data.optionChain.result[0].options;
+    if (!optionSets.length) throw new Error("No option data found");
+
+    let strikes = new Set();
+    optionSets.forEach(set => {
+      const contracts = type === "put" ? set.puts : set.calls;
+      contracts.forEach(c => strikes.add(c.strike));
+    });
+    strikes = Array.from(strikes).sort((a,b)=>a-b);
+
+    const strikeSel = document.getElementById("strike");
+    strikeSel.innerHTML = "";
+    strikes.forEach(s => {
+      const opt = document.createElement("option");
+      opt.value = s;
+      opt.text = s;
+      strikeSel.appendChild(opt);
+    });
+  } catch(err) {
+    document.getElementById("strike").innerHTML = "<option>Error</option>";
+  }
+}
+
+function computeMetrics(chain, strike, type) {
+  const now = new Date();
+  let rows = [];
+  chain.optionChain.result[0].options.forEach(optSet => {
+    const exp = new Date(optSet.expirationDate * 1000);
+    const days = Math.round((exp - now) / (1000*60*60*24));
+    const contracts = type === "put" ? optSet.puts : optSet.calls;
+    const match = contracts.find(c => Math.abs(c.strike - strike) < 1e-6);
+    if (!match || days <= 0) return;
+
+    const mid = (match.bid + match.ask) / 2 || match.lastPrice;
+    if (!mid || mid <= 0) return;
+
+    const collateral = strike * 100;
+    const premium = mid * 100;
+    const yieldExp = premium / collateral;
+    const annROI = yieldExp * (365/days);
+    const daily = yieldExp / days;
+    const breakeven = type === "put" ? strike - mid : strike + mid;
+
+    rows.push({
+      expiry: exp.toISOString().split("T")[0],
+      days, strike,
+      mid: mid.toFixed(2),
+      premium: premium.toFixed(2),
+      collateral: collateral.toFixed(2),
+      yield: (yieldExp*100).toFixed(2),
+      annROI: (annROI*100).toFixed(2),
+      daily: (daily*100).toFixed(4),
+      breakeven: breakeven.toFixed(2),
+      IV: (match.impliedVolatility*100).toFixed(2),
+      OI: match.openInterest,
+      Vol: match.volume
+    });
+  });
+  // sort by annualized ROI descending
+  return rows.sort((a,b)=>parseFloat(b.annROI) - parseFloat(a.annROI));
+}
+
+// trigger strike list when ticker or type changes
+document.getElementById("ticker").addEventListener("change", () => {
+  const ticker = document.getElementById("ticker").value.toUpperCase();
+  const type = document.getElementById("optionType").value;
+  if (ticker) populateStrikes(ticker, type);
+});
+document.getElementById("optionType").addEventListener("change", () => {
+  const ticker = document.getElementById("ticker").value.toUpperCase();
+  const type = document.getElementById("optionType").value;
+  if (ticker) populateStrikes(ticker, type);
+});
+
+// form submit
+document.getElementById("optionForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const ticker = document.getElementById("ticker").value.toUpperCase();
+  const strike = parseFloat(document.getElementById("strike").value);
+  const type = document.getElementById("optionType").value;
+
+  document.getElementById("results").innerHTML = "Loading...";
+  try {
+    const data = await fetchOptions(ticker);
+    const rows = computeMetrics(data, strike, type);
+    if (!rows.length) {
+      document.getElementById("results").innerHTML = "No matching contracts.";
+      return;
+    }
+
+    let html = "<table><tr><th>Expiry</th><th>Days</th><th>Strike</th><th>Mid</th><th>Premium</th><th>Collateral</th><th>Yield%</th><th>Ann ROI%</th><th>Daily%</th><th>Breakeven</th><th>IV%</th><th>OI</th><th>Vol</th></tr>";
+    rows.forEach(r=>{
+      html += `<tr>
+        <td>${r.expiry}</td><td>${r.days}</td><td>${r.strike}</td><td>${r.mid}</td>
+        <td>${r.premium}</td><td>${r.collateral}</td><td>${r.yield}</td>
+        <td>${r.annROI}</td><td>${r.daily}</td><td>${r.breakeven}</td>
+        <td>${r.IV}</td><td>${r.OI}</td><td>${r.Vol}</td>
+      </tr>`;
+    });
+    html += "</table>";
+    document.getElementById("results").innerHTML = html;
+  } catch(err) {
+    document.getElementById("results").innerHTML = "Error: " + err.message;
+  }
+});
+</script>
+</body>
+</html>
