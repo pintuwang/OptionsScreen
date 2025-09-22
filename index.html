@@ -46,10 +46,39 @@
 <script>
 const PROXY = "https://optionsscreen.onrender.com";
 
+const tickerInput = document.getElementById("ticker");
+const optionTypeSel = document.getElementById("optionType");
+const strikeSelect = document.getElementById("strike");
+const msgEl = document.getElementById("msg");
+const resultsEl = document.getElementById("results");
+let tickerInputTimer;
+
+function sanitizeTickerValue({ updateField = true } = {}) {
+  const value = tickerInput.value.toUpperCase().trim();
+  if (updateField) {
+    tickerInput.value = value;
+  }
+  return value;
+}
+
+function resetStrikeSelect() {
+  strikeSelect.innerHTML = "<option value=\"\">-- enter ticker first --</option>";
+}
+
+function fetchStrikesForCurrentTicker({ updateField = true } = {}) {
+  const ticker = sanitizeTickerValue({ updateField });
+  if (!ticker) {
+    resetStrikeSelect();
+    return Promise.resolve();
+  }
+  return populateStrikes(ticker, optionTypeSel.value);
+}
+
 // --- helpers ---
 function ensureResult(data) {
   if (!data || !data.optionChain || !Array.isArray(data.optionChain.result) || data.optionChain.result.length === 0) {
-    const desc = (data && data.error && (data.error.description || data.error)) ? String(data.error.description || data.error) : "No option chain available for this ticker.";
+    const desc = (data && data.error && (data.error.description || data.error)) ? String(data.error.description || data.error) :
+ "No option chain available for this ticker.";
     throw new Error(desc);
   }
   return data.optionChain.result[0];
@@ -66,9 +95,8 @@ async function fetchChain(ticker, date=null) {
 
 // --- populate strikes (from nearest expiry; fast & sufficient) ---
 async function populateStrikes(ticker, type) {
-  const strikeSel = document.getElementById("strike");
-  strikeSel.innerHTML = "<option>Loading…</option>";
-  document.getElementById("msg").textContent = "";
+  strikeSelect.innerHTML = "<option>Loading…</option>";
+  msgEl.textContent = "";
   try {
     const base = await fetchChain(ticker);
     const firstSet = (base.options && base.options[0]) ? base.options[0] : null;
@@ -78,16 +106,16 @@ async function populateStrikes(ticker, type) {
 
     if (strikes.length === 0) throw new Error("No strikes found for nearest expiry.");
 
-    strikeSel.innerHTML = "";
+    strikeSelect.innerHTML = "";
     strikes.forEach(s => {
       const opt = document.createElement("option");
       opt.value = s;
       opt.textContent = s;
-      strikeSel.appendChild(opt);
+      strikeSelect.appendChild(opt);
     });
   } catch (err) {
-    strikeSel.innerHTML = "<option value=''>Error</option>";
-    document.getElementById("msg").textContent = "Strike load error: " + err.message;
+    strikeSelect.innerHTML = "<option value=''>Error</option>";
+    msgEl.textContent = "Strike load error: " + err.message;
   }
 }
 
@@ -149,31 +177,58 @@ async function gatherAllRows(ticker, strike, type) {
 }
 
 // --- UI wiring ---
-document.getElementById("ticker").addEventListener("change", () => {
-  const t = document.getElementById("ticker").value.toUpperCase().trim();
-  document.getElementById("ticker").value = t;
-  const type = document.getElementById("optionType").value;
-  if (t) populateStrikes(t, type);
+tickerInput.addEventListener("input", () => {
+  clearTimeout(tickerInputTimer);
+  tickerInputTimer = setTimeout(() => {
+    fetchStrikesForCurrentTicker({ updateField: false });
+  }, 400);
 });
 
-document.getElementById("optionType").addEventListener("change", () => {
-  const t = document.getElementById("ticker").value.toUpperCase().trim();
-  if (t) populateStrikes(t, document.getElementById("optionType").value);
+tickerInput.addEventListener("change", () => {
+  clearTimeout(tickerInputTimer);
+  fetchStrikesForCurrentTicker();
+});
+
+optionTypeSel.addEventListener("change", () => {
+  clearTimeout(tickerInputTimer);
+  const t = sanitizeTickerValue();
+  if (t) populateStrikes(t, optionTypeSel.value);
+  else resetStrikeSelect();
 });
 
 document.getElementById("optionForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const t = document.getElementById("ticker").value.toUpperCase().trim();
-  const type = document.getElementById("optionType").value;
-  const strike = parseFloat(document.getElementById("strike").value);
-  document.getElementById("msg").textContent = "";
-  const results = document.getElementById("results");
-  results.innerHTML = "Loading…";
+  clearTimeout(tickerInputTimer);
+  const t = sanitizeTickerValue();
+  const type = optionTypeSel.value;
+  msgEl.textContent = "";
+  resultsEl.innerHTML = "";
+
+  if (!t) {
+    msgEl.textContent = "Enter a ticker symbol to search.";
+    tickerInput.focus();
+    return;
+  }
+
+  let strike = parseFloat(strikeSelect.value);
+  if (!strikeSelect.value || Number.isNaN(strike)) {
+    await fetchStrikesForCurrentTicker();
+    strike = parseFloat(strikeSelect.value);
+    if (!strikeSelect.value || Number.isNaN(strike)) {
+      if (!msgEl.textContent) {
+        msgEl.textContent = "Please choose a strike price after the list loads.";
+      }
+      strikeSelect.focus();
+      return;
+    }
+  }
+
+  resultsEl.innerHTML = "Loading…";
 
   try {
     const rows = await gatherAllRows(t, strike, type);
     if (!rows.length) {
-      results.textContent = "No matching contracts found for that strike across expiries.";
+      resultsEl.textContent = "No matching contracts found for that strike across expiries.";
       return;
     }
     let html = "<table><tr><th>Expiry</th><th>Days</th><th>Strike</th><th>Mid</th><th>Premium</th><th>Collateral</th><th>Yield%</th><th>Ann ROI%</th><th>Daily%</th><th>Breakeven</th><th>IV%</th><th>OI</th><th>Vol</th></tr>";
@@ -186,10 +241,10 @@ document.getElementById("optionForm").addEventListener("submit", async (e) => {
       </tr>`;
     });
     html += "</table>";
-    results.innerHTML = html;
+    resultsEl.innerHTML = html;
   } catch (err) {
-    document.getElementById("msg").textContent = "Error: " + err.message;
-    results.innerHTML = "";
+    msgEl.textContent = "Error: " + err.message;
+    resultsEl.innerHTML = "";
   }
 });
 </script>
