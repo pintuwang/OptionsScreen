@@ -53,6 +53,10 @@ const msgEl = document.getElementById("msg");
 const resultsEl = document.getElementById("results");
 let tickerInputTimer;
 
+const strikeCache = new Map();
+const STRIKE_CACHE_TTL = 60 * 1000;
+const STRIKE_COOLDOWN_MS = 30 * 1000;
+
 function sanitizeTickerValue({ updateField = true } = {}) {
   const value = tickerInput.value.toUpperCase().trim();
   if (updateField) {
@@ -77,8 +81,7 @@ function fetchStrikesForCurrentTicker({ updateField = true } = {}) {
 // --- helpers ---
 function ensureResult(data) {
   if (!data || !data.optionChain || !Array.isArray(data.optionChain.result) || data.optionChain.result.length === 0) {
-    const desc = (data && data.error && (data.error.description || data.error)) ? String(data.error.description || data.error) :
- "No option chain available for this ticker.";
+    const desc = (data && data.error && (data.error.description || data.error)) ? String(data.error.description || data.error) : "No option chain available for this ticker.";
     throw new Error(desc);
   }
   return data.optionChain.result[0];
@@ -88,35 +91,102 @@ async function fetchChain(ticker, date=null) {
   const t = (ticker || "").toUpperCase().trim();
   const url = `${PROXY}/options?ticker=${encodeURIComponent(t)}${date ? `&date=${encodeURIComponent(date)}` : ""}`;
   const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Proxy HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(`Proxy HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   const data = await res.json().catch(() => { throw new Error("Proxy returned non-JSON"); });
   return ensureResult(data);
 }
 
 // --- populate strikes (from nearest expiry; fast & sufficient) ---
 async function populateStrikes(ticker, type) {
-  strikeSelect.innerHTML = "<option>Loading…</option>";
-  msgEl.textContent = "";
-  try {
-    const base = await fetchChain(ticker);
-    const firstSet = (base.options && base.options[0]) ? base.options[0] : null;
-    if (!firstSet) throw new Error("No options payload present.");
-    const contracts = type === "put" ? (firstSet.puts || []) : (firstSet.calls || []);
-    let strikes = [...new Set(contracts.map(c => c.strike))].sort((a,b)=>a-b);
+  const key = `${String(ticker).toUpperCase().trim()}|${type}`;
+  const now = Date.now();
+  const cached = strikeCache.get(key);
+  const hasFreshCache = cached && Array.isArray(cached.strikes) && cached.strikes.length && (now - cached.timestamp) < STRIKE_CACHE_TTL;
 
-    if (strikes.length === 0) throw new Error("No strikes found for nearest expiry.");
-
-    strikeSelect.innerHTML = "";
-    strikes.forEach(s => {
-      const opt = document.createElement("option");
-      opt.value = s;
-      opt.textContent = s;
-      strikeSelect.appendChild(opt);
-    });
-  } catch (err) {
-    strikeSelect.innerHTML = "<option value=''>Error</option>";
-    msgEl.textContent = "Strike load error: " + err.message;
+  if (hasFreshCache) {
+    applyStrikeOptions(cached.strikes);
+    msgEl.textContent = "";
+    return;
   }
+
+  if (cached && cached.failureTimestamp && (now - cached.failureTimestamp) < STRIKE_COOLDOWN_MS) {
+    if (Array.isArray(cached.strikes) && cached.strikes.length) {
+      applyStrikeOptions(cached.strikes);
+    } else {
+      strikeSelect.innerHTML = "<option value=''>Please wait…</option>";
+    }
+    msgEl.textContent = "Too many requests, please wait…";
+    return;
+  }
+
+  msgEl.textContent = "";
+  strikeSelect.innerHTML = "<option>Loading…</option>";
+
+  const entry = cached || {};
+  if (!cached) {
+    strikeCache.set(key, entry);
+  }
+
+  if (!entry.promise) {
+    entry.promise = (async () => {
+      try {
+        const base = await fetchChain(ticker);
+        const firstSet = (base.options && base.options[0]) ? base.options[0] : null;
+        if (!firstSet) throw new Error("No options payload present.");
+        const contracts = type === "put" ? (firstSet.puts || []) : (firstSet.calls || []);
+        const strikes = [...new Set(contracts.map(c => c.strike))].sort((a,b)=>a-b);
+
+        if (!strikes.length) throw new Error("No strikes found for nearest expiry.");
+
+        entry.strikes = strikes;
+        entry.timestamp = Date.now();
+        entry.failureTimestamp = undefined;
+        return strikes;
+      } catch (err) {
+        if (err && err.status === 429) {
+          entry.failureTimestamp = Date.now();
+          const friendly = new Error("Too many requests, please wait…");
+          friendly.status = 429;
+          throw friendly;
+        }
+        throw err;
+      } finally {
+        delete entry.promise;
+      }
+    })();
+  }
+
+  try {
+    const strikes = await entry.promise;
+    applyStrikeOptions(strikes);
+    msgEl.textContent = "";
+  } catch (err) {
+    if (Array.isArray(entry.strikes) && entry.strikes.length) {
+      applyStrikeOptions(entry.strikes);
+    } else {
+      strikeSelect.innerHTML = "<option value=''>Error</option>";
+    }
+
+    if (err && err.status === 429) {
+      msgEl.textContent = err.message;
+    } else {
+      msgEl.textContent = "Strike load error: " + err.message;
+    }
+  }
+}
+
+function applyStrikeOptions(strikes) {
+  strikeSelect.innerHTML = "";
+  strikes.forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = s;
+    opt.textContent = s;
+    strikeSelect.appendChild(opt);
+  });
 }
 
 // --- compute metrics across ALL expiries ---
