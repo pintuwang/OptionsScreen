@@ -59,13 +59,68 @@ const STRIKE_COOLDOWN_MS = 30 * 1000;
 
 function isThrottledError(err) {
   if (!err) return false;
-  const status = err.status;
-  const numericStatus = Number(status);
-  if (Number.isFinite(numericStatus) && numericStatus === 429) {
+
+  const seen = new Set();
+  const stack = [];
+  const values = [];
+
+  const pushValue = (value) => {
+    if (!value) return;
+    if (typeof value === "object") {
+      if (!seen.has(value)) {
+        seen.add(value);
+        stack.push(value);
+      }
+    } else {
+      values.push(value);
+    }
+  };
+
+  pushValue(err);
+
+  while (stack.length) {
+    const current = stack.pop();
+    values.push(current);
+    if (current && typeof current === "object") {
+      if ("cause" in current) pushValue(current.cause);
+      if ("originalError" in current) pushValue(current.originalError);
+    }
+  }
+
+  const messageFromValue = (value) => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (typeof value.message === "string") return value.message;
+    return "";
+  };
+
+  const isFailedFetchTypeError = (value) => {
+    if (!value) return false;
+    const message = messageFromValue(value);
+    if (!message) return false;
+    const normalizedMessage = message.toLowerCase();
+    if (!normalizedMessage.includes("failed to fetch")) return false;
+    if (typeof value === "string") {
+      return true;
+    }
+    const name = typeof value.name === "string" ? value.name.toLowerCase() : "";
+    if (name && !name.includes("typeerror")) return false;
+    return true;
+  };
+
+  if (values.some(isFailedFetchTypeError)) {
     return true;
   }
-  const message = typeof err.message === "string" ? err.message : (typeof err === "string" ? err : "");
-  return message.includes("Proxy HTTP 429");
+
+  if (values.some(value => {
+    if (!value || typeof value !== "object") return false;
+    const numericStatus = Number(value.status);
+    return Number.isFinite(numericStatus) && numericStatus === 429;
+  })) {
+    return true;
+  }
+
+  return values.some(value => messageFromValue(value).includes("Proxy HTTP 429"));
 }
 
 function sanitizeTickerValue({ updateField = true } = {}) {
@@ -285,7 +340,7 @@ document.getElementById("optionForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   clearTimeout(tickerInputTimer);
   const t = sanitizeTickerValue();
-  const type = optionTypeSel.value;
+  1 const type = optionTypeSel.value;
   msgEl.textContent = "";
   resultsEl.innerHTML = "";
 
@@ -335,3 +390,4 @@ document.getElementById("optionForm").addEventListener("submit", async (e) => {
 </script>
 </body>
 </html>
+
