@@ -57,6 +57,18 @@ const strikeCache = new Map();
 const STRIKE_CACHE_TTL = 60 * 1000;
 const STRIKE_COOLDOWN_MS = 30 * 1000;
 
+function isThrottledError(err) {
+  if (!err) return false;
+  const status = err.status;
+  const numericStatus = Number(status);
+  if (Number.isFinite(numericStatus) && numericStatus === 429) {
+    return true;
+  }
+  const message = typeof err.message === "string" ? err.message : (typeof err === "string" ? err : "");
+  return message.includes("Proxy HTTP 429");
+}
+
+  
 function sanitizeTickerValue({ updateField = true } = {}) {
   const value = tickerInput.value.toUpperCase().trim();
   if (updateField) {
@@ -147,10 +159,12 @@ async function populateStrikes(ticker, type) {
         entry.failureTimestamp = undefined;
         return strikes;
       } catch (err) {
-        if (err && err.status === 429) {
+        
+        if (isThrottledError(err)) {
           entry.failureTimestamp = Date.now();
           const friendly = new Error("Too many requests, please wait…");
           friendly.status = 429;
+          friendly.originalError = err;
           throw friendly;
         }
         throw err;
@@ -171,10 +185,20 @@ async function populateStrikes(ticker, type) {
       strikeSelect.innerHTML = "<option value=''>Error</option>";
     }
 
-    if (err && err.status === 429) {
-      msgEl.textContent = err.message;
+    
+     if (isThrottledError(err)) {
+      const fallback = "Too many requests, please wait…";
+      const text = (err && typeof err.message === "string" && err.message.trim()) ? err.message : fallback;
+      msgEl.textContent = text;
     } else {
-      msgEl.textContent = "Strike load error: " + err.message;
+   
+      const detail = (err && err.message) ? err.message : "Unknown error";
+      msgEl.textContent = "Strike load error: " + detail;
+    } 
+          if (isThrottledError(err)) {
+      const fallback = "Too many requests, please wait…";
+      const text = (err && typeof err.message === "string" && err.message.trim()) ? err.message : fallback;
+      msgEl.textContent = text;
     }
   }
 }
