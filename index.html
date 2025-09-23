@@ -68,7 +68,6 @@ function isThrottledError(err) {
   return message.includes("Proxy HTTP 429");
 }
 
-  
 function sanitizeTickerValue({ updateField = true } = {}) {
   const value = tickerInput.value.toUpperCase().trim();
   if (updateField) {
@@ -159,7 +158,6 @@ async function populateStrikes(ticker, type) {
         entry.failureTimestamp = undefined;
         return strikes;
       } catch (err) {
-        
         if (isThrottledError(err)) {
           entry.failureTimestamp = Date.now();
           const friendly = new Error("Too many requests, please wait…");
@@ -185,20 +183,13 @@ async function populateStrikes(ticker, type) {
       strikeSelect.innerHTML = "<option value=''>Error</option>";
     }
 
-    
-     if (isThrottledError(err)) {
+    if (isThrottledError(err)) {
       const fallback = "Too many requests, please wait…";
       const text = (err && typeof err.message === "string" && err.message.trim()) ? err.message : fallback;
       msgEl.textContent = text;
     } else {
-   
       const detail = (err && err.message) ? err.message : "Unknown error";
       msgEl.textContent = "Strike load error: " + detail;
-    } 
-          if (isThrottledError(err)) {
-      const fallback = "Too many requests, please wait…";
-      const text = (err && typeof err.message === "string" && err.message.trim()) ? err.message : fallback;
-      msgEl.textContent = text;
     }
   }
 }
