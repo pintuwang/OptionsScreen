@@ -242,7 +242,7 @@ async function populateStrikes(ticker, type) {
     if (Array.isArray(entry.strikes) && entry.strikes.length) {
       applyStrikeOptions(entry.strikes);
     } else {
-      strikeSelect.innerHTML = "<option value=''>Error</option>";
+      strikeSelect.innerHTML = "<option value=''>Please wait…</option>";
     }
 
     if (isThrottledError(err)) {
