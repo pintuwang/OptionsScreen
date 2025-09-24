@@ -340,7 +340,7 @@ document.getElementById("optionForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   clearTimeout(tickerInputTimer);
   const t = sanitizeTickerValue();
-  1 const type = optionTypeSel.value;
+  const type = optionTypeSel.value;
   msgEl.textContent = "";
   resultsEl.innerHTML = "";
 
