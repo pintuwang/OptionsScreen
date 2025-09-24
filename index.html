@@ -70,6 +70,12 @@ function isThrottledError(err) {
       if (!seen.has(value)) {
         seen.add(value);
         stack.push(value);
+        if (Array.isArray(value.errors)) {
+          value.errors.forEach(pushValue);
+        }
+        if ("error" in value) {
+          pushValue(value.error);
+        }
       }
     } else {
       values.push(value);
@@ -84,6 +90,7 @@ function isThrottledError(err) {
     if (current && typeof current === "object") {
       if ("cause" in current) pushValue(current.cause);
       if ("originalError" in current) pushValue(current.originalError);
+      if ("reason" in current) pushValue(current.reason);
     }
   }
 
